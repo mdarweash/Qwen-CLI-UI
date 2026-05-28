@@ -8,6 +8,25 @@ const AGENT_HOME = process.env.AGENT_HOME || path.join(process.env.HOME, '.qwen'
 const PROJECTS_DIR = process.env.AGENT_PROJECTS_DIR || path.join(AGENT_HOME, 'projects');
 const CONFIG_PATH = process.env.AGENT_CONFIG_PATH || path.join(AGENT_HOME, 'project-config.json');
 
+// Helper to find JSONL files in project dir and its chats/ subdirectory
+async function findJsonlFiles(projectDir) {
+  const jsonlFiles = [];
+  try {
+    const rootFiles = await fs.readdir(projectDir);
+    for (const f of rootFiles) {
+      if (f.endsWith('.jsonl')) jsonlFiles.push(path.join(projectDir, f));
+    }
+  } catch (e) { /* ignore */ }
+  try {
+    const chatsDir = path.join(projectDir, 'chats');
+    const chatFiles = await fs.readdir(chatsDir);
+    for (const f of chatFiles) {
+      if (f.endsWith('.jsonl')) jsonlFiles.push(path.join(chatsDir, f));
+    }
+  } catch (e) { /* ignore */ }
+  return jsonlFiles;
+}
+
 // Cache for extracted project directories
 const projectDirectoryCache = new Map();
 let cacheTimestamp = Date.now();
@@ -84,34 +103,15 @@ async function extractProjectDirectory(projectName) {
   let extractedPath;
   
   try {
-    const files = await fs.readdir(projectDir);
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
-    
+    const jsonlFiles = await findJsonlFiles(projectDir);
+
     if (jsonlFiles.length === 0) {
       // Fall back to decoded project name if no sessions
-      // First try to decode from base64
-      try {
-        // Handle custom base64url encoding used by previous toolchains
-        // Replace URL-safe characters back to standard base64
-        let base64Name = projectName.replace(/_/g, '/');
-        
-        // The ? at the end is actually base64-encoded '>' character
-        // We need to decode it properly and then remove the '>'
-        extractedPath = Buffer.from(base64Name, 'base64').toString('utf8');
-        
-        // Remove any trailing '>' or '?' that might have been incorrectly added
-        extractedPath = extractedPath.replace(/[>?]+$/, '');
-        
-        // Clean the path by removing any non-printable characters
-        extractedPath = extractedPath.replace(/[^\x20-\x7E]/g, '').trim();
-      } catch (e) {
-        // If base64 decode fails, use old method
-        extractedPath = projectName.replace(/-/g, '/');
-      }
+      // Qwen CLI encodes project paths as dash-separated: -home-user-projects-myapp
+      extractedPath = projectName.replace(/-/g, '/');
     } else {
       // Process all JSONL files to collect cwd values
-      for (const file of jsonlFiles) {
-        const jsonlFile = path.join(projectDir, file);
+      for (const jsonlFile of jsonlFiles) {
         const fileStream = fsSync.createReadStream(jsonlFile);
         const rl = readline.createInterface({
           input: fileStream,
@@ -188,18 +188,8 @@ async function extractProjectDirectory(projectName) {
   } catch (error) {
     // console.error(`Error extracting project directory for ${projectName}:`, error);
     // Fall back to decoded project name
-    try {
-      // Handle custom padding: __ at the end should be replaced with ==
-      let base64Name = projectName.replace(/_/g, '+').replace(/-/g, '/');
-      if (base64Name.endsWith('++')) {
-        base64Name = base64Name.slice(0, -2) + '==';
-      }
-      extractedPath = Buffer.from(base64Name, 'base64').toString('utf8');
-      // Clean the path by removing any non-printable characters
-      extractedPath = extractedPath.replace(/[^\x20-\x7E]/g, '').trim();
-    } catch (e) {
-      extractedPath = projectName.replace(/-/g, '/');
-    }
+    // Qwen CLI encodes project paths as dash-separated: -home-user-projects-myapp
+    extractedPath = projectName.replace(/-/g, '/');
     
     // Cache the fallback result too
     projectDirectoryCache.set(projectName, extractedPath);
@@ -242,16 +232,11 @@ async function getProjects() {
         
         // Try to get sessions for this project (just first 5 for performance)
         try {
-          // Use sessionManager to get sessions for this project
-          const sessionManager = (await import('./sessionManager.js')).default;
-          const allSessions = sessionManager.getProjectSessions(actualProjectDir);
-          
-          // Paginate the sessions
-          const paginatedSessions = allSessions.slice(0, 5);
-          project.sessions = paginatedSessions;
+          const sessionsResult = await getSessions(entry.name, 5, 0);
+          project.sessions = sessionsResult.sessions;
           project.sessionMeta = {
-            hasMore: allSessions.length > 5,
-            total: allSessions.length
+            hasMore: sessionsResult.hasMore,
+            total: sessionsResult.total
           };
         } catch (e) {
           // console.warn(`Could not load sessions for project ${entry.name}:`, e.message);
@@ -298,34 +283,31 @@ async function getProjects() {
 
 async function getSessions(projectName, limit = 5, offset = 0) {
   const projectDir = path.join(PROJECTS_DIR, projectName);
-  
+
   try {
-    const files = await fs.readdir(projectDir);
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
-    
+    const jsonlFiles = await findJsonlFiles(projectDir);
+
     if (jsonlFiles.length === 0) {
       return { sessions: [], hasMore: false, total: 0 };
     }
-    
+
     // For performance, get file stats to sort by modification time
     const filesWithStats = await Promise.all(
       jsonlFiles.map(async (file) => {
-        const filePath = path.join(projectDir, file);
-        const stats = await fs.stat(filePath);
+        const stats = await fs.stat(file);
         return { file, mtime: stats.mtime };
       })
     );
-    
+
     // Sort files by modification time (newest first) for better performance
     filesWithStats.sort((a, b) => b.mtime - a.mtime);
-    
+
     const allSessions = new Map();
     let processedCount = 0;
-    
+
     // Process files in order of modification time
     for (const { file } of filesWithStats) {
-      const jsonlFile = path.join(projectDir, file);
-      const sessions = await parseJsonlSessions(jsonlFile);
+      const sessions = await parseJsonlSessions(file);
       
       // Merge sessions, avoiding duplicates by session ID
       sessions.forEach(session => {
@@ -399,14 +381,19 @@ async function parseJsonlSessions(filePath) {
             // Update summary if this is a summary entry
             if (entry.type === 'summary' && entry.summary) {
               session.summary = entry.summary;
-            } else if (entry.message?.role === 'user' && entry.message?.content && session.summary === 'New Session') {
-              // Use first user message as summary if no summary entry exists
-              const content = entry.message.content;
-              if (typeof content === 'string' && content.length > 0) {
-                // Skip command messages that start with <command-name>
-                if (!content.startsWith('<command-name>')) {
-                  session.summary = content.length > 50 ? content.substring(0, 50) + '...' : content;
-                }
+            } else if (entry.message?.role === 'user' && session.summary === 'New Session') {
+              // Extract text from either content string or parts array
+              let content = '';
+              if (typeof entry.message.content === 'string') {
+                content = entry.message.content;
+              } else if (Array.isArray(entry.message.parts)) {
+                content = entry.message.parts
+                  .filter(p => p.text)
+                  .map(p => p.text)
+                  .join(' ');
+              }
+              if (content.length > 0 && !content.startsWith('<command-name>')) {
+                session.summary = content.length > 50 ? content.substring(0, 50) + '...' : content;
               }
             }
             
@@ -437,21 +424,19 @@ async function parseJsonlSessions(filePath) {
 
 // Get messages for a specific session
 async function getSessionMessages(projectName, sessionId) {
-  const projectDir = path.join(process.env.HOME, '.qwen', 'projects', projectName);
-  
+  const projectDir = path.join(PROJECTS_DIR, projectName);
+
   try {
-    const files = await fs.readdir(projectDir);
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
-    
+    const jsonlFiles = await findJsonlFiles(projectDir);
+
     if (jsonlFiles.length === 0) {
       return [];
     }
-    
+
     const messages = [];
-    
+
     // Process all JSONL files to find messages for this session
-    for (const file of jsonlFiles) {
-      const jsonlFile = path.join(projectDir, file);
+    for (const jsonlFile of jsonlFiles) {
       const fileStream = fsSync.createReadStream(jsonlFile);
       const rl = readline.createInterface({
         input: fileStream,
@@ -473,9 +458,33 @@ async function getSessionMessages(projectName, sessionId) {
     }
     
     // Sort messages by timestamp
-    return messages.sort((a, b) => 
+    const sorted = messages.sort((a, b) =>
       new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
     );
+
+    // Normalize message format for the frontend
+    return sorted.filter(msg => {
+      const type = msg.type;
+      return type === 'user' || type === 'assistant';
+    }).map(msg => {
+      const normalized = { ...msg };
+
+      // Map role: "model" -> "assistant"
+      if (normalized.message?.role === 'model') {
+        normalized.message = { ...normalized.message, role: 'assistant' };
+      }
+
+      // Map parts[] -> content
+      if (normalized.message && Array.isArray(normalized.message.parts)) {
+        const content = normalized.message.parts
+          .filter(p => p.text)
+          .map(p => ({ type: 'text', text: p.text }));
+        normalized.message = { ...normalized.message, content };
+        delete normalized.message.parts;
+      }
+
+      return normalized;
+    });
   } catch (error) {
     // console.error(`Error reading messages for session ${sessionId}:`, error);
     return [];
@@ -502,19 +511,17 @@ async function renameProject(projectName, newDisplayName) {
 
 // Delete a session from a project
 async function deleteSession(projectName, sessionId) {
-  const projectDir = path.join(process.env.HOME, '.qwen', 'projects', projectName);
-  
+  const projectDir = path.join(PROJECTS_DIR, projectName);
+
   try {
-    const files = await fs.readdir(projectDir);
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
-    
+    const jsonlFiles = await findJsonlFiles(projectDir);
+
     if (jsonlFiles.length === 0) {
       throw new Error('No session files found for this project');
     }
-    
+
     // Check all JSONL files to find which one contains the session
-    for (const file of jsonlFiles) {
-      const jsonlFile = path.join(projectDir, file);
+    for (const jsonlFile of jsonlFiles) {
       const content = await fs.readFile(jsonlFile, 'utf8');
       const lines = content.split('\n').filter(line => line.trim());
       

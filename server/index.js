@@ -227,7 +227,7 @@ app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, re
 app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateToken, async (req, res) => {
   try {
     const { projectName, sessionId } = req.params;
-    const messages = await sessionManager.getSessionMessages(sessionId);
+    const messages = await getSessionMessages(projectName, sessionId);
     res.json({ messages });
   } catch (error) {
     res.status(500).json({ error: error.message });
