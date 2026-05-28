@@ -15,7 +15,7 @@ function ToolsSettings({ isOpen, onClose }) {
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null);
-  const [projectSortOrder, setProjectSortOrder] = useState('name');
+  const [projectSortOrder, setProjectSortOrder] = useState('date');
 
   // MCP server management state
   const [mcpServers, setMcpServers] = useState([]);
