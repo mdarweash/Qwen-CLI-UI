@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import { existsSync, readlinkSync, lstatSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { getActiveModel } from './settings.js';
 import sessionManager from './sessionManager.js';
 
 let activeQwenProcesses = new Map(); // Track active processes by session ID
@@ -108,8 +109,8 @@ async function spawnQwen(command, options = {}, ws) {
     // No need to check for MCP servers as Qwen handles this internally
     
     // Add model for all sessions (both new and resumed)
-    const modelToUse = options.model || 'gpt-5';
-    args.push('-m', modelToUse);
+    const modelToUse = options.model || getActiveModel() || '';
+    if (modelToUse) args.push('-m', modelToUse);
     
     // Add reasoning effort if provided (for GPT-5)
     if (modelToUse === 'gpt-5') {

@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import sessionManager from './sessionManager.js';
+import { getActiveModel } from './settings.js';
 
 // Track active processes by session ID for abort support
 const activeProcesses = new Map();
@@ -86,7 +87,7 @@ export async function spawnAgent(prompt, options = {}, ws) {
       const line = template
         .replaceAll('{prompt_file}', JSON.stringify(promptFile).slice(1, -1))
         .replaceAll('{cwd}', JSON.stringify(workingDir).slice(1, -1))
-        .replaceAll('{model}', model || '')
+        .replaceAll('{model}', model || getActiveModel() || '')
         .replaceAll('{images}', imagesJoined)
         .replaceAll('{skip_permissions_flag}', skipFlag);
       command = 'bash';
@@ -104,9 +105,10 @@ export async function spawnAgent(prompt, options = {}, ws) {
       // Add --prompt flag with the prompt text for qwen
       args.push('--prompt', promptText);
 
-      // Model flag
+      // Model flag — use frontend selection, fall back to settings.json active model
       const modelFlag = process.env.AGENT_MODEL_FLAG || '-m';
-      if (model && modelFlag) args.push(modelFlag, model);
+      const resolvedModel = model || getActiveModel();
+      if (resolvedModel && modelFlag) args.push(modelFlag, resolvedModel);
 
       // Permissions bypass flag if requested
       if (settings.skipPermissions && process.env.AGENT_SKIP_PERMISSIONS_FLAG) {

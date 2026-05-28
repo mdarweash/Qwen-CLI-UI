@@ -42,7 +42,7 @@ function ToolsSettings({ isOpen, onClose }) {
   const [mcpServerTools, setMcpServerTools] = useState({});
   const [mcpToolsLoading, setMcpToolsLoading] = useState({});
   const [activeTab, setActiveTab] = useState('tools');
-  const [selectedModel, setSelectedModel] = useState('qwen3-coder-plus');
+  const [selectedModel, setSelectedModel] = useState('');
   const [enableNotificationSound, setEnableNotificationSound] = useState(false);
 
   // Common tool patterns
@@ -63,65 +63,80 @@ function ToolsSettings({ isOpen, onClose }) {
     'WebSearch'
   ];
   
-  // Qwen model options - Only Qwen 3 Coder Plus available
-  const availableModels = [
-    { value: 'qwen3-coder-plus', label: 'Qwen 3 Coder Plus', description: 'Advanced Qwen coding model' }
-  ];
+  // Models loaded from ~/.qwen/settings.json via /api/settings
+  const [availableModels, setAvailableModels] = useState([]);
+  const [settingsModels, setSettingsModels] = useState(null); // raw settings data
 
-  // MCP API functions
-  const fetchMcpServers = async () => {
+  const fetchSettings = async () => {
     try {
-      // MCP endpoints are not implemented yet - skip these calls
-      return;
-      
       const token = localStorage.getItem('auth-token');
-      
-      // First try to get servers using agent CLI (Qwen)
-      const cliResponse = await fetch('/api/mcp/cli/list', {
+      const response = await fetch('/api/settings', {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       });
-      
-      if (cliResponse.ok) {
-        const cliData = await cliResponse.json();
-        if (cliData.success && cliData.servers) {
-          // Convert CLI format to our format
-          const servers = cliData.servers.map(server => ({
-            id: server.name,
-            name: server.name,
-            type: server.type,
-            scope: 'user',
-            config: {
-              command: server.command || '',
-              args: server.args || [],
-              env: server.env || {},
-              url: server.url || '',
-              headers: server.headers || {},
-              timeout: 30000
-            },
-            created: new Date().toISOString(),
-            updated: new Date().toISOString()
-          }));
-          setMcpServers(servers);
-          return;
+      if (response.ok) {
+        const data = await response.json();
+        setSettingsModels(data);
+        const models = (data.models || []).map(m => ({
+          value: m.id,
+          label: m.name,
+          description: `Provider: ${m.provider}${m.baseUrl ? ' • ' + m.baseUrl : ''}`,
+          provider: m.provider,
+          baseUrl: m.baseUrl,
+          modalities: m.modalities || {},
+        }));
+        setAvailableModels(models);
+        // Set active model as default if no model is saved yet
+        if (data.activeModel && !localStorage.getItem('qwen-tools-settings')) {
+          setSelectedModel(data.activeModel);
         }
+        return data; // return for use in loadSettings
       }
-      
-      // Fallback to direct config reading
+    } catch (error) {
+      // Fall back to empty — user will see no models until settings.json is configured
+    }
+    return null;
+  };
+
+  // MCP API functions
+  const fetchMcpServers = async (settingsData) => {
+    try {
+      // Use MCP servers from settings.json (passed from fetchSettings result)
+      const mcpData = settingsData?.mcpServers || settingsModels?.mcpServers;
+      if (mcpData?.length > 0) {
+        const servers = mcpData.map(server => ({
+          id: server.name,
+          name: server.name,
+          type: server.command ? 'stdio' : 'http',
+          scope: 'user',
+          config: {
+            command: server.command || '',
+            args: server.args || [],
+            env: (server.envKeys || []).reduce((acc, key) => ({ ...acc, [key]: '•••' }), {}),
+            url: '',
+            headers: {},
+            timeout: 30000
+          },
+          fromSettingsJson: true,
+        }));
+        setMcpServers(servers);
+        return;
+      }
+
+      // Fallback to CLI/API if no settings.json data
+      const token = localStorage.getItem('auth-token');
       const response = await fetch('/api/mcp/servers?scope=user', {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       });
-      
+
       if (response.ok) {
         const data = await response.json();
         setMcpServers(data.servers || []);
-      } else {
-        // console.error('Failed to fetch MCP servers');
       }
     } catch (error) {
       // console.error('Error fetching MCP servers:', error);
@@ -285,17 +300,20 @@ function ToolsSettings({ isOpen, onClose }) {
 
   const loadSettings = async () => {
     try {
-      
+
+      // Load from ~/.qwen/settings.json via API first
+      const settingsData = await fetchSettings();
+
       // Load from localStorage
       const savedSettings = localStorage.getItem('qwen-tools-settings') || localStorage.getItem('qwen-tools-settings');
-      
+
       if (savedSettings) {
         const settings = JSON.parse(savedSettings);
         setAllowedTools(settings.allowedTools || []);
         setDisallowedTools(settings.disallowedTools || []);
         setSkipPermissions(settings.skipPermissions || false);
         setProjectSortOrder(settings.projectSortOrder || 'name');
-        setSelectedModel(settings.selectedModel || 'qwen3-coder-plus');
+        setSelectedModel(settings.selectedModel || '');
         setEnableNotificationSound(settings.enableNotificationSound || false);
       } else {
         // Set defaults
@@ -305,8 +323,8 @@ function ToolsSettings({ isOpen, onClose }) {
         setProjectSortOrder('name');
       }
 
-      // Load MCP servers from API
-      await fetchMcpServers();
+      // Load MCP servers from settings data
+      await fetchMcpServers(settingsData);
     } catch (error) {
       // console.error('Error loading tool settings:', error);
       // Set defaults on error
@@ -653,8 +671,13 @@ function ToolsSettings({ isOpen, onClose }) {
               <div className="flex items-center gap-3">
                 <Zap className="w-5 h-5 text-cyan-500" />
                 <h3 className="text-lg font-medium text-foreground">
-                  Qwen Model Configuration
+                  Model Configuration
                 </h3>
+                {settingsModels?.activeModel && (
+                  <Badge variant="outline" className="text-xs bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300 border-cyan-300 dark:border-cyan-700">
+                    Active: {settingsModels.activeModel}
+                  </Badge>
+                )}
               </div>
               <div className="bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800 rounded-lg p-4">
                 <div className="space-y-4">
@@ -662,21 +685,37 @@ function ToolsSettings({ isOpen, onClose }) {
                     <label className="block text-sm font-medium text-foreground mb-2">
                       Select Model
                     </label>
-                    <select
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg focus:ring-cyan-500 focus:border-cyan-500"
-                    >
-                      {availableModels.map(model => (
-                        <option key={model.value} value={model.value}>
-                          {model.label}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="text-sm text-gray-600 dark:text-gray-400 mt-2">
-                      {availableModels.find(m => m.value === selectedModel)?.description}
-                    </div>
+                    {availableModels.length > 0 ? (
+                      <select
+                        value={selectedModel}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg focus:ring-cyan-500 focus:border-cyan-500"
+                      >
+                        {availableModels.map(model => (
+                          <option key={model.value} value={model.value}>
+                            {model.label} ({model.provider})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="text-sm text-muted-foreground p-2 bg-gray-100 dark:bg-gray-800 rounded-lg">
+                        No models configured. Add model providers to ~/.qwen/settings.json
+                      </div>
+                    )}
+                    {selectedModel && availableModels.find(m => m.value === selectedModel) && (
+                      <div className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                        {availableModels.find(m => m.value === selectedModel)?.description}
+                      </div>
+                    )}
                   </div>
+                  {settingsModels?.selectedProvider && (
+                    <div className="text-xs text-muted-foreground">
+                      Provider: <span className="font-medium">{settingsModels.selectedProvider}</span>
+                      {settingsModels.fastModel && (
+                        <span className="ml-3">Fast model: <span className="font-medium">{settingsModels.fastModel}</span></span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

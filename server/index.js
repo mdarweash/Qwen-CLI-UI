@@ -44,6 +44,7 @@ import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
 import { initializeDatabase } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
+import { getPublicSettings, readSettings } from './settings.js';
 
 // File system watcher for projects folder
 let projectsWatcher = null;
@@ -181,10 +182,19 @@ app.use('/api/mcp', authenticateToken, mcpRoutes);
 app.use(express.static(path.join(__dirname, '../dist')));
 
 // API Routes (protected)
+app.get('/api/settings', authenticateToken, (req, res) => {
+  try {
+    const publicSettings = getPublicSettings();
+    res.json(publicSettings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/config', authenticateToken, (req, res) => {
   const host = req.headers.host || `${req.hostname}:${PORT}`;
   const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'wss' : 'ws';
-  
+
   // console.log('Config API called - Returning host:', host, 'Protocol:', protocol);
   
   res.json({

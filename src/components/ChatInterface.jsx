@@ -1207,12 +1207,42 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       return false;
     }
   });
+  const [settingsActiveModel, setSettingsActiveModel] = useState(null);
+
+  // Fetch active model from ~/.qwen/settings.json on mount
+  useEffect(() => {
+    const fetchActiveModel = async () => {
+      try {
+        const token = localStorage.getItem('auth-token');
+        const response = await fetch('/api/settings', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.activeModel) {
+            setSettingsActiveModel(data.activeModel);
+          }
+        }
+      } catch (e) {}
+    };
+    fetchActiveModel();
+  }, []);
+
+  const getDefaultModel = () => {
+    try {
+      const settings = JSON.parse(localStorage.getItem('qwen-tools-settings') || '{}');
+      return settings.selectedModel || '';
+    } catch (e) {
+      return '';
+    }
+  };
+
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
       const settings = JSON.parse(localStorage.getItem('qwen-tools-settings') || localStorage.getItem('qwen-tools-settings') || '{}');
-      return settings.selectedModel || 'qwen2.5-coder';
+      return settings.selectedModel || '';
     } catch (e) {
-      return 'qwen2.5-coder';
+      return '';
     }
   });
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
@@ -1552,10 +1582,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       try {
         const settings = JSON.parse(localStorage.getItem('qwen-tools-settings') || localStorage.getItem('qwen-tools-settings') || '{}');
         setIsYoloMode(settings.skipPermissions || false);
-        setSelectedModel(settings.selectedModel || 'qwen2.5-coder');
+        setSelectedModel(settings.selectedModel || '');
       } catch (e) {
         setIsYoloMode(false);
-        setSelectedModel('qwen2.5-coder');
+        setSelectedModel('');
       }
     };
     
@@ -2243,7 +2273,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             allowedTools: settings.allowedTools || [],
             disallowedTools: settings.disallowedTools || [],
             skipPermissions: settings.skipPermissions || false,
-            selectedModel: settings.selectedModel || 'qwen2.5-coder'
+            selectedModel: settings.selectedModel || settingsActiveModel || ''
           };
         }
       } catch (error) {
@@ -2253,7 +2283,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         allowedTools: [],
         disallowedTools: [],
         skipPermissions: false,
-        selectedModel: 'qwen2.5-coder'
+        selectedModel: settingsActiveModel || ''
       };
     };
 
@@ -2269,7 +2299,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         resume: !!currentSessionId,
         toolsSettings: toolsSettings,
         permissionMode: permissionMode,
-        model: toolsSettings.selectedModel || 'qwen2.5-coder',
+        model: toolsSettings.selectedModel || settingsActiveModel || '',
         images: uploadedImages // Pass images to backend
       }
     };
@@ -2597,7 +2627,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full animate-pulse ${isYoloMode ? 'bg-orange-500' : 'bg-cyan-500'}`} />
                 <span>{isYoloMode ? 'Full Auto Mode' : 'Qwen Default'}</span>
-                <span className="text-xs opacity-75">• {selectedModel}</span>
+                <span className="text-xs opacity-75">• {selectedModel || settingsActiveModel || 'default'}</span>
               </div>
             </div>
             
