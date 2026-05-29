@@ -39,7 +39,6 @@ import mime from 'mime-types';
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
 import { spawnAgent as spawnQwen, abortAgentSession as abortQwenSession } from './agent-cli.js';
 import sessionManager from './sessionManager.js';
-import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
 import { initializeDatabase } from './database/db.js';
@@ -172,9 +171,6 @@ app.use('/api', validateApiKey);
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
 
-// Git API Routes (protected)
-app.use('/api/git', authenticateToken, gitRoutes);
-
 // MCP API Routes (protected)
 app.use('/api/mcp', authenticateToken, mcpRoutes);
 
@@ -214,19 +210,12 @@ app.get('/api/projects', authenticateToken, async (req, res) => {
 
 app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, res) => {
   try {
-    // Extract the actual project directory path
-    const projectPath = await extractProjectDirectory(req.params.projectName);
-    
-    // Get sessions from sessionManager
-    const sessions = sessionManager.getProjectSessions(projectPath);
-    
-    // Apply pagination
     const { limit = 5, offset = 0 } = req.query;
-    const paginatedSessions = sessions.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
-    
+    const result = await getSessions(req.params.projectName, parseInt(limit), parseInt(offset));
     res.json({
-      sessions: paginatedSessions,
-      total: sessions.length
+      sessions: result.sessions,
+      total: result.total,
+      hasMore: result.hasMore
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -631,9 +620,7 @@ function handleShellConnection(ws) {
                 /(?:xdg-open|open|start)\s+(https?:\/\/[^\s\x1b\x07]+)/g,
                 // BROWSER environment variable override
                 /OPEN_URL:\s*(https?:\/\/[^\s\x1b\x07]+)/g,
-                // Git and other tools opening URLs
                 /Opening\s+(https?:\/\/[^\s\x1b\x07]+)/gi,
-                // General URL patterns that might be opened
                 /Visit:\s*(https?:\/\/[^\s\x1b\x07]+)/gi,
                 /View at:\s*(https?:\/\/[^\s\x1b\x07]+)/gi,
                 /Browse to:\s*(https?:\/\/[^\s\x1b\x07]+)/gi
@@ -1054,18 +1041,25 @@ async function startServer() {
   try {
     // Initialize authentication database
     await initializeDatabase();
-    // console.log('✅ Database initialization skipped (testing)');
-    
-    server.listen(PORT, '0.0.0.0', async () => {
-      // console.log(`Qwen CLI UI server running on http://0.0.0.0:${PORT}`);
-      
-      // Start watching the projects folder for changes
-      await setupProjectsWatcher(); // Re-enabled with better-sqlite3
+
+    return new Promise((resolve, reject) => {
+      server.listen(PORT, '0.0.0.0', async () => {
+        // Start watching the projects folder for changes
+        await setupProjectsWatcher();
+        resolve(PORT);
+      });
+      server.on('error', reject);
     });
   } catch (error) {
-    // console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 }
 
-startServer();
+// Auto-start when run directly (not when imported by Electron)
+const isMainModule = process.argv[1] &&
+  (process.argv[1].endsWith('server/index.js') || process.argv[1].endsWith('server\\index.js'));
+if (isMainModule) {
+  startServer();
+}
+
+export { startServer, PORT };
