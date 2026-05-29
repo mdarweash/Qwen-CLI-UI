@@ -374,7 +374,7 @@ function Sidebar({
 
     try {
       const currentSessionCount = (project.sessions?.length || 0) + (additionalSessions[project.name]?.length || 0);
-      const result = await api.getSessions(project.name, 5, currentSessionCount);
+      const result = await api.sessions(project.name, 5, currentSessionCount).then(r => r.json());
       
       // Store additional sessions locally
       setAdditionalSessions(prev => ({
